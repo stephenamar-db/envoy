@@ -18,6 +18,7 @@
 #include "test/test_common/test_time.h"
 #include "test/test_common/utility.h"
 
+#include "absl/strings/str_cat.h"
 #include "benchmark/benchmark.h"
 
 namespace Envoy {
@@ -52,6 +53,42 @@ public:
     Stats::Scope& scope = *store_.rootScope();
     for (auto& stat_name_storage : stat_names_) {
       scope.counterFromStatName(stat_name_storage->statName());
+    }
+  }
+
+  void initCustomRegexTags() {
+    TestUtility::loadFromYaml(R"EOF(
+stats_tags:
+- tag_name: custom_listener
+  regex: '^listener\.((.*?)\.)'
+- tag_name: custom_service
+  regex: '^.*?service\.((.*?)\.)'
+- tag_name: custom_rbac
+  regex: '^.*?rbac\.((.*?)\.)'
+- tag_name: custom_http
+  regex: '^.*?http\.((.*?)\.)'
+- tag_name: custom_response_code
+  regex: '_rq(_(\d{3}))$'
+- tag_name: custom_virtual_cluster
+  regex: '^vhost\..*?\.vcluster\.((.*?)\.)'
+)EOF",
+                              stats_config_);
+    store_.setTagProducer(Stats::TagProducerImpl::createTagProducer(stats_config_, {}).value());
+    stat_names_.clear();
+    for (uint32_t i = 0; i < 1000; ++i) {
+      stat_names_.push_back(std::make_unique<Stats::StatNameManagedStorage>(
+          absl::StrCat("vhost.backend.vcluster.vc_", i, ".upstream_rq_total"), symbol_table_));
+    }
+  }
+
+  void accessCountersInNewScopes(uint32_t num_scopes) {
+    std::vector<Stats::ScopeSharedPtr> scopes;
+    for (uint32_t i = 0; i < num_scopes; ++i) {
+      auto scope = store_.createScope("");
+      for (const auto& name : stat_names_) {
+        scope->counterFromStatName(name->statName());
+      }
+      scopes.push_back(std::move(scope));
     }
   }
 
@@ -136,6 +173,31 @@ static void BM_StatsWithTlsAndRejectionsWithoutDot(benchmark::State& state) {
   }
 }
 BENCHMARK(BM_StatsWithTlsAndRejectionsWithoutDot);
+
+// NOLINTNEXTLINE(readability-identifier-naming)
+static void BM_StatsRepeatedScopesCustomRegex(benchmark::State& state) {
+  Envoy::ThreadLocalStorePerf context;
+  context.initCustomRegexTags();
+  context.accessCounters();
+
+  for (auto _ : state) { // NOLINT
+    context.accessCountersInNewScopes(7);
+  }
+  state.SetItemsProcessed(state.iterations() * 7000);
+}
+BENCHMARK(BM_StatsRepeatedScopesCustomRegex);
+
+// NOLINTNEXTLINE(readability-identifier-naming)
+static void BM_StatsNewScopeCustomRegex(benchmark::State& state) {
+  Envoy::ThreadLocalStorePerf context;
+  context.initCustomRegexTags();
+
+  for (auto _ : state) { // NOLINT
+    context.accessCountersInNewScopes(1);
+  }
+  state.SetItemsProcessed(state.iterations() * 1000);
+}
+BENCHMARK(BM_StatsNewScopeCustomRegex);
 
 // TODO(jmarantz): add multi-threaded variant of this test, that aggressively
 // looks up stats in multiple threads to try to trigger contention issues.
