@@ -74,6 +74,10 @@ stats_tags:
 )EOF",
                               stats_config_);
     store_.setTagProducer(Stats::TagProducerImpl::createTagProducer(stats_config_, {}).value());
+    initVirtualClusterNames();
+  }
+
+  void initVirtualClusterNames() {
     stat_names_.clear();
     for (uint32_t i = 0; i < 1000; ++i) {
       stat_names_.push_back(std::make_unique<Stats::StatNameManagedStorage>(
@@ -90,6 +94,12 @@ stats_tags:
       }
       scopes.push_back(std::move(scope));
     }
+  }
+
+  uint64_t numCounters() const {
+    uint64_t count = 0;
+    heap_alloc_.forEachCounter([&count](size_t size) { count = size; }, [](Stats::Counter&) {});
+    return count;
   }
 
   void initThreading() {
@@ -177,12 +187,14 @@ BENCHMARK(BM_StatsWithTlsAndRejectionsWithoutDot);
 // NOLINTNEXTLINE(readability-identifier-naming)
 static void BM_StatsRepeatedScopesCustomRegex(benchmark::State& state) {
   Envoy::ThreadLocalStorePerf context;
+  const uint64_t initial_counters = context.numCounters();
   context.initCustomRegexTags();
   context.accessCounters();
 
   for (auto _ : state) { // NOLINT
     context.accessCountersInNewScopes(7);
   }
+  state.counters["retained_counters"] = context.numCounters() - initial_counters;
   state.SetItemsProcessed(state.iterations() * 7000);
 }
 BENCHMARK(BM_StatsRepeatedScopesCustomRegex);
@@ -190,14 +202,30 @@ BENCHMARK(BM_StatsRepeatedScopesCustomRegex);
 // NOLINTNEXTLINE(readability-identifier-naming)
 static void BM_StatsNewScopeCustomRegex(benchmark::State& state) {
   Envoy::ThreadLocalStorePerf context;
+  const uint64_t initial_counters = context.numCounters();
   context.initCustomRegexTags();
 
   for (auto _ : state) { // NOLINT
     context.accessCountersInNewScopes(1);
   }
+  state.counters["retained_counters"] = context.numCounters() - initial_counters;
   state.SetItemsProcessed(state.iterations() * 1000);
 }
 BENCHMARK(BM_StatsNewScopeCustomRegex);
+
+// NOLINTNEXTLINE(readability-identifier-naming)
+static void BM_StatsNewScopeDefaultTags(benchmark::State& state) {
+  Envoy::ThreadLocalStorePerf context;
+  const uint64_t initial_counters = context.numCounters();
+  context.initVirtualClusterNames();
+
+  for (auto _ : state) { // NOLINT
+    context.accessCountersInNewScopes(1);
+  }
+  state.counters["retained_counters"] = context.numCounters() - initial_counters;
+  state.SetItemsProcessed(state.iterations() * 1000);
+}
+BENCHMARK(BM_StatsNewScopeDefaultTags);
 
 // TODO(jmarantz): add multi-threaded variant of this test, that aggressively
 // looks up stats in multiple threads to try to trigger contention issues.
